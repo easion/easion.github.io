@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script src="js/react.development.js"></script>
+  <script src="js/react-dom.development.js"></script>
+  <script src="js/babel.min.js"></script>
+
+  <!-- MUI Core -->
+  <script src="js/material-ui.development.js"></script>
+  <script src="js/adapter-latest.js"></script>
+
+  <!-- Roboto Font -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap" />
+  <!-- Font Icons -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons" />
+</head>
+
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+
+    const {
+      AppBar, Tabs, Tab, Typography, Box, Card, CardContent, Stack,
+      TextField, Container, Button, List, ListItem, ListItemText, CircularProgress,
+      Grid, Select, MenuItem, InputLabel, FormControl
+    } = MaterialUI;
+
+    var clientId = randomId(10);
+
+    console.log("clientId = " + clientId);
+
+    function randomId(length) {
+      const characters = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+      const pickRandom = () => characters.charAt(Math.floor(Math.random() * characters.length));
+      return [...Array(length)].map(pickRandom).join('');
+    }
+
+    function TabPanel(props) {
+      const { children, value, index, ...other } = props;
+      return (
+        <div
+          role="tabpanel"
+          hidden={value !== index}
+          id={`simple-tabpanel-${index}`}
+          aria-labelledby={`simple-tab-${index}`}
+          {...other}
+        >
+          {value === index && (
+            <Box sx={{ p: 3 }}>
+              <Typography>{children}</Typography>
+            </Box>
+          )}
+        </div>
+      );
+    }
+
+    function VideoPreview() {
+      return (
+        <Card sx={{ minWidth: 275, mb: 2 }}>
+          <CardContent>
+            <Typography variant="h5" component="div">
+              视频预览
+            </Typography>
+            <Box sx={{ width: '100%', height: 200, bgcolor: 'grey.300', mt: 2 }}>
+              [视频预览区域]
+            </Box>
+          </CardContent>
+        </Card>
+      );
+    }
+
+    function VideoStream() {
+      const videoRef = React.useRef(null);
+      const [status, setStatus] = React.useState('Initializing...');
+      const [CAMERA_ID, setCAMERA_ID] = React.useState('camera_id_6732');
+      const [isConnected, setIsConnected] = React.useState(false);
+      const wsRef = React.useRef(null);
+      const pcRef = React.useRef(null);
+      const dcRef = React.useRef(null);
+
+      const signaling_send = (msg) => {
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          var text = JSON.stringify(msg);
+          console.log("signaling_send: --> " + text);
+          wsRef.current.send(text);
+        }
+      };
+
+
+      const initWebSocket = () => {
+
+        //setClientId(randomId(10));
+
+        var _default_websocket_url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + location.host + '/rws/ws';
+        wsRef.current = new WebSocket(_default_websocket_url);
+
+        wsRef.current.onopen = () => {
+          var cmdbody = {};
+          cmdbody.cmd = "webrtc_auth"; //登录
+          cmdbody.id = clientId;
+          //console.log("--> " + JSON.stringify(cmdbody));
+          signaling_send(cmdbody);
+
+          setStatus('WebSocket connected. Click Start to begin streaming.');
+        };
+
+        wsRef.current.onmessage = async (event) => {
+          const message = JSON.parse(event.data);
+          if (message.cmd == 'webrtc_set_sdp') {
+            console.log("--set sdp --" + event.data);
+          }
+          else if (message.cmd == 'webrtc_request_offer') {
+            console.log("--receive offer--------------", message);
+            handleNewConnect(message);
+            setStatus("正在建立连接,请等待...");
+          }
+          else if (message.cmd == 'event-notify') {
+            if (message.event == 'webrtc_sdp') {
+              setStatus("收到SDP，急速连接中...");
+              handleOffer(message);
+              console.log("--receive sdp--------------", message);
+            }
+            else if (message.event == 'webrtc_candidate') {
+              console.log("--receive candidate--------------", message);
+
+              /*var candidate = new RTCIceCandidate(message);
+              pcRef.current.addIceCandidate(candidate)
+                .then(() => {
+                  console.log('成功添加 ICE candidate');
+                })
+                .catch((error) => {
+                  console.error('添加 ICE candidate 失败: ' + error);
+                });
+        */
+
+            }
+            else {
+              console.log("--receive event--------------", message);
+            }
+          }
+          else {
+            //console.log("--> unknow ws recv:", e.data);
+          }
+
+        };
+
+        wsRef.current.onerror = (error) => {
+          console.error('WebSocket Error:', error);
+          setStatus('Error: WebSocket connection failed');
+        };
+
+        wsRef.current.onclose = () => {
+          setStatus('WebSocket disconnected');
+          setIsConnected(false);
+        };
+      };
+
+      const handleNewConnect = async (offer) => {
+        pcRef.current = new RTCPeerConnection({
+          // Recommended for libdatachannel
+          bundlePolicy: 'max-bundle',
+          //offerToReceiveAudio: 0,
+          //offerToReceiveVideo: 1,
+          iceServers: [
+            { 'urls': 'stun:stun.l.google.com:19302' },
+            { 'urls': 'stun:stun1.l.google.com:19302' },
+            { 'urls': 'stun:stun2.l.google.com:19302' },
+            { 'urls': 'stun:stun3.l.google.com:19302' }
+          ]
+        });
+
+        // 当新的候选对发生变化时，触发selectedcandidatepairchange事件
+        pcRef.current.onselectedcandidatepairchange = function (event) {
+          // 获取当前的候选对
+          var candidatePair = event.candidatePair;
+
+          // 获取本地和远程候选者
+          var localCandidate = candidatePair.localCandidate;
+          var remoteCandidate = candidatePair.remoteCandidate;
+
+          // 打印出候选者的信息
+          console.log("Local candidate: " + localCandidate.ipAddress + ":" + localCandidate.portNumber);
+          console.log("Remote candidate: " + remoteCandidate.ipAddress + ":" + remoteCandidate.portNumber);
+        };
+
+        pcRef.current.onconnectionstatechange = () => {
+          if (pcRef.current.connectionState === 'connected') {
+            //const tracks = pcRef.current.getReceivers().map(r => r.track);
+            //const stream = new MediaStream(tracks);
+            setStatus("WebRTC建立连接OK");
+            //console.log("selectedCandidatePair", pcRef.current);
+
+            pcRef.current.getTransceivers().forEach((transceiver) => {
+              //transceiver.stop();
+              console.log("getTransceivers1", transceiver);
+              //console.log("getTransceivers2", transceiver.getSelectedCandidatePair());
+              transceiver.onselectedcandidatepairchange = function (event) {
+                var pair = transceiver.getSelectedCandidatePair();
+                console.log("pair ", pair);
+                //localProtocol.innerText = pair.local.protocol.toUpperCase();
+                //remoteProtocol.innerText = pair.remote.protocol.toUpperCase();
+              }
+            });
+
+            pcRef.current.getStats().then((stats) => {
+              // Iterate through the stats and log them
+              stats.forEach(stat => {
+                console.log("stat: ", stat);
+              });
+            });
+          }
+          else if (pcRef.current.connectionState === 'disconnected') {
+            setStatus("WebRTC已经断开!");
+          }
+          else {
+          }
+          console.log("local onconnectionstatechange: " + pcRef.current.connectionState);
+        }
+
+        // send any ice candidates to the other peer
+        pcRef.current.onicecandidate = function (evt) {
+          console.log("local onicecandidate: " + JSON.stringify({ "candidate": evt.candidate }));
+          var cand = {};
+          cand.cmd = "webrtc_candidate";
+          cand.id = clientId;
+          cand.to = CAMERA_ID;
+          if (evt.candidate) {
+            cand.candidate = evt.candidate.candidate;
+            cand.sdpMid = evt.candidate.sdpMid;
+            cand.sdpMLineIndex = evt.candidate.sdpMLineIndex;
+          }
+          else {
+            cand.candidate = null;
+          }
+          signaling_send(cand);
+        };
+
+        pcRef.current.onicecandidateerror = function (e) {
+          console.log("local onicecandidateerror: " + JSON.stringify(e));
+        };
+
+        pcRef.current.ondatachannel = function (evt) {
+          const channel = evt.channel;
+          console.log("local ondatachannel: " + JSON.stringify(evt));
+        };
+
+        pcRef.current.onaddstream = function (evt) {
+          console.log("local onaddstream: " + JSON.stringify(evt));
+        };
+
+        pcRef.current.onnegotiationneeded = async (evt) => {
+          console.log("local onnegotiationneeded: " + JSON.stringify(evt));
+        };
+
+        pcRef.current.onicegatheringstatechange = (state) => {
+          console.log("--> local iceGatheringState: " + pcRef.current.iceGatheringState);
+          if (pcRef.current.iceGatheringState === 'complete') {
+            // We only want to provide an answer once all of our candidates have been added to the SDP.
+            const answer = pcRef.current.localDescription;
+
+            console.log("localDescription type: " + answer.type);
+            //document.querySelector('textarea').value = answer.sdp;
+            //sdpLocal.innerHTML = answer.sdp;
+
+            var cmdbody = {
+              "cmd": "webrtc_set_sdp",
+            };
+            cmdbody.type = answer.type;
+            cmdbody.sdp = answer.sdp;
+            cmdbody.id = clientId;
+            cmdbody.to = CAMERA_ID;
+            signaling_send(cmdbody);
+          }
+          else {
+          }
+        }
+
+        pcRef.current.ontrack = (event) => {
+          const track = event.track;
+
+          if (track.kind === 'video') {
+          }
+          else if (track.kind === 'audio') {
+          }
+
+          if (videoRef.current) {
+            videoRef.current.srcObject = event.streams[0];
+
+            videoRef.current.play();
+            setStatus("正在显示视频...");
+
+            videoRef.current.addEventListener('loadedmetadata', function () {
+              console.log(`Remote video videoWidth: ${this.videoWidth}px,  videoHeight: ${this.videoHeight}px`);
+            });
+
+            videoRef.current.addEventListener('resize', () => {
+              console.log(`Remote video size changed to ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`);
+            });
+          }
+          else {
+            console.log("No video elements");
+          }
+
+          event.streams[0].onremovetrack = function (evt_r) {
+            const track = evt_r.track;
+            console.log("local onremovetrack: kind " + track.kind);
+
+            if (track.kind === 'video') {
+            }
+            else if (track.kind === 'audio') {
+            }
+          };
+
+        };
+
+        var sendChannel = pcRef.current.createDataChannel("browserChannel");
+        //sendChannel = pcRef.current.createDataChannel("sendDataChannel", {reliable: false});
+        sendChannel.onopen = (event) => {
+          console.log('Data Channel opened' + JSON.stringify(event));
+          sendChannel.send('Hi from browser!');
+        }
+        sendChannel.onclose = (event) => {
+          console.log('Data Channel closed');
+        }
+        sendChannel.onmessage = (event) => {
+          console.log("recv: " + JSON.stringify(event));
+          console.log("recv: " + event.data);
+        }
+
+        dcRef.current = sendChannel;
+      }
+
+      const handleOffer = async (offer) => {
+        //await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
+        await pcRef.current.setRemoteDescription(offer);
+        const answer = await pcRef.current.createAnswer();
+        console.log("browser answer: " + JSON.stringify(answer));
+        await pcRef.current.setLocalDescription(answer);
+
+        //wsRef.current.send(JSON.stringify({ type: 'answer', answer: pcRef.current.localDescription }));
+
+        setStatus('WebRTC connected. Streaming video...');
+        setIsConnected(true);
+      };
+
+      const enterFullScreen = () => {
+        if (videoRef.current) {
+          const videoElement = videoRef.current;
+          if (videoElement.requestFullscreen) {
+            videoElement.requestFullscreen();
+          } else if (videoElement.mozRequestFullScreen) { // Firefox
+            videoElement.mozRequestFullScreen();
+          } else if (videoElement.webkitRequestFullscreen) { // Chrome, Safari and Opera
+            videoElement.webkitRequestFullscreen();
+          } else if (videoElement.msRequestFullscreen) { // IE/Edge
+            videoElement.msRequestFullscreen();
+          }
+
+          console.log("Enter full screen");
+        }
+      };
+
+      const startStreaming = () => {
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+
+          var cmdbody = {};
+          cmdbody.cmd = "webrtc_request_offer";
+          cmdbody.id = clientId;
+          cmdbody.to = CAMERA_ID;
+          signaling_send(cmdbody);
+          setStatus('Requesting video stream...');
+        } else {
+          setStatus('Error: WebSocket not connected');
+        }
+      };
+
+      React.useEffect(() => {
+        initWebSocket();
+
+        return () => {
+          if (wsRef.current) {
+            wsRef.current.close();
+          }
+          if (pcRef.current) {
+            pcRef.current.close();
+          }
+        };
+      }, []);
+
+      return (
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <Typography variant="h5" component="div">
+              视频预览
+            </Typography>
+            <Box sx={{ width: '100%', height: 400, bgcolor: 'grey.300', mt: 2, position: 'relative' }}>
+              <video ref={videoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+              <Typography
+                sx={{
+                  position: 'absolute',
+                  bottom: 8,
+                  left: 8,
+                  bgcolor: 'rgba(0,0,0,0.6)',
+                  color: 'white',
+                  padding: '4px 8px',
+                  borderRadius: 1
+                }}
+              >
+                {status}
+              </Typography>
+
+            </Box>
+
+            <Stack direction="row" spacing={2}>
+
+              <Button
+                variant="contained"
+                color="primary"
+                onClick={startStreaming}
+                sx={{ mt: 2, mr: 2 }}
+              >
+                Open Video
+              </Button>
+
+              <Button
+                variant="contained"
+                color="primary"
+                onClick={enterFullScreen}
+                sx={{ mt: 2 }}
+              >
+                Full Screen
+              </Button>
+
+            </Stack>
+
+          </CardContent>
+        </Card>
+      );
+    }
+
+    function SystemInfomation() {
+      const [ver, setVer] = React.useState('');
+      const [tz, setTimezone] = React.useState('');
+      const [codec, setCodec] = React.useState('h264');
+
+      const postJsonCmd = (cmdline, func) => {
+        fetch('/api', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: cmdline,
+        })
+          .then(response => response.json())
+          .then(func)
+          .catch(error => console.error('错误:', error));
+      };
+
+      const updateValue = (data) => {
+        var params = {
+          cmd: 'sys_params',
+          sync: false,
+        };
+        params = { ...params, ...data };
+        const formData = JSON.stringify(params);
+        postJsonCmd(formData, (res) => {
+          console.log("update Data: " + formData);
+        });
+      };
+
+      React.useEffect(() => {
+        const formData = JSON.stringify({
+          cmd: 'sys_params',
+          sync: false,
+        });
+        postJsonCmd(formData, (data) => {
+          console.log("get Data: " + data);
+          setVer(data.sysver);
+          setTimezone(data.tz);
+          setCodec(data.venc);
+        });
+
+        return () => {
+          console.log("SystemInfomation exitting");
+        };
+      }, []);
+
+      return (
+        <Card sx={{ minWidth: 275 }}>
+          <CardContent>
+            <Typography variant="h5" component="div">
+              系统信息
+            </Typography>
+            <Grid container spacing={3}>
+              <Grid item xs={6}>
+                <TextField label="版本号" fullWidth margin="normal" value={ver} />
+                <TextField label="时区" fullWidth margin="normal" value={tz} onChange={(e) => setTimezone(e.target.value)} />
+              </Grid>
+              <Grid item xs={6}>
+                <FormControl variant="outlined" fullWidth>
+                  <InputLabel id="codec-label">视频编码</InputLabel>
+                  <Select
+                    labelId="codec-label"
+                    id="codec"
+                    value={codec}
+                    onChange={(e) => {
+                      console.log("set codec: " + e.target.value);
+                      setCodec(e.target.value);
+                      updateValue({ venc: e.target.value, 'reboot': 2 });
+                    }}
+                    label="视频编码"
+                  >
+                    <MenuItem value="h264">H.264</MenuItem>
+                    <MenuItem value="h265">H.265</MenuItem>
+                  </Select>
+                </FormControl>
+              </Grid>
+            </Grid>
+            <Button variant="contained" sx={{ mt: 2, mr: 2 }} color="primary" sx={{ mt: 2 }} onClick={() => updateValue({ 'tz': tz })}>保存设置</Button>
+            <Button variant="contained" sx={{ mt: 2, mr: 2 }} color="secondary" sx={{ mt: 2 }} onClick={() => updateValue({ 'reboot': 1 })}>重启</Button>
+          </CardContent>
+        </Card>
+      );
+    }
+
+    function CommandForm() {
+      const [command, setCommand] = React.useState('');
+
+      const handleCommandChange = (event) => {
+        setCommand(event.target.value);
+      };
+
+      const postJsonCmd = (cmdline, func) => {
+        fetch('/api', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: cmdline,
+        })
+          .then(response => response.json())
+          .then(func)
+          .catch(error => console.error('错误:', error));
+      };
+
+      const handleJsonCommand = () => {
+        console.log("JSON " + command);
+        postJsonCmd(command, (data) => {
+          console.log("post cmd result: " + JSON.stringify(data));
+          setCommand(JSON.stringify(data));
+        });
+      };
+
+      const handleLuaCommand = () => {
+        const formData = JSON.stringify({
+          cmd: 'run_lua',
+          string: command,
+          from: navigator.userAgent,
+        });
+        console.log("LUA: " + formData);
+        postJsonCmd(formData, (data) => {
+          if (data.status !== 0) {
+            setCommand(JSON.stringify(data));
+            alert("执行失败");
+            return;
+          }
+          alert("执行成功!");
+          console.log("post lua result: " + JSON.stringify(data));
+        });
+      };
+
+
+      return (
+        <Card sx={{ minWidth: 275 }}>
+          <CardContent>
+            <Box my={4}>
+              <Typography variant="h5" component="h1" gutterBottom>
+                输入指令
+              </Typography>
+              <TextField
+                fullWidth
+                multiline
+                rows={3}
+                variant="outlined"
+                value={command}
+                onChange={handleCommandChange}
+                margin="normal"
+              />
+              <Box mt={2}>
+                <Button
+                  variant="contained"
+                  color="primary"
+                  onClick={handleJsonCommand}
+                  style={{ marginRight: '10px' }}
+                >
+                  执行JSON指令
+                </Button>
+                <Button
+                  variant="contained"
+                  color="secondary"
+                  onClick={handleLuaCommand}
+                  style={{ marginLeft: '10px' }}
+                >
+                  执行Lua脚本
+                </Button>
+              </Box>
+            </Box>
+          </CardContent>
+        </Card>
+      );
+    }
+
+    function Logs() {
+      const [logs, setLogs] = React.useState([]);
+      const [loading, setLoading] = React.useState(true);
+      const [error, setError] = React.useState(null);
+      const listRef = React.useRef(null);
+
+      const fetchLogs = async () => {
+        try {
+          const response = await fetch('/log.txt');
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+          const text = await response.text();
+          const newLogs = text.split('\n')
+            .filter(line => line.trim() !== '')
+            .map(line => {
+              const [timestamp, type, ...messageParts] = line.split(' ');
+              return { timestamp, type, message: messageParts.join(' ') };
+            });
+          setLogs(newLogs);
+          setLoading(false);
+        } catch (e) {
+          setError('Failed to fetch logs: ' + e.message);
+          setLoading(false);
+        }
+      };
+
+      React.useEffect(() => {
+        fetchLogs();
+        const interval = setInterval(fetchLogs, 2000);
+        return () => clearInterval(interval);
+      }, []);
+
+      React.useEffect(() => {
+        if (listRef.current) {
+          listRef.current.scrollTop = listRef.current.scrollHeight;
+        }
+      }, [logs]);
+
+      if (loading) return <CircularProgress />;
+      if (error) return <Typography color="error">{error}</Typography>;
+
+      const getColorForLogType = (type) => {
+        switch (type) {
+          case 'Error': return 'error.main';
+          case 'Info': return 'text.primary';
+          case 'Debug': return 'success.main';
+          default: return 'text.primary';
+        }
+      };
+
+      return (
+        <Card>
+          <CardContent>
+            <Typography variant="h5" component="div">
+              日志
+            </Typography>
+            <Box ref={listRef} sx={{ maxHeight: 600, overflow: 'auto' }}>
+              <List>
+                {logs.map((entry, index) => (
+                  <ListItem key={index}>
+                    <ListItemText
+                      primary={
+                        <Typography component="span" sx={{ color: getColorForLogType(entry.type) }}>
+                          {`${entry.timestamp} ${entry.type} ${entry.message}`}
+                        </Typography>
+                      }
+                    />
+                  </ListItem>
+                ))}
+              </List>
+            </Box>
+          </CardContent>
+        </Card>
+      );
+    }
+
+    function App() {
+      const [value, setValue] = React.useState(0);
+
+      const handleChange = (event, newValue) => {
+        setValue(newValue);
+      };
+
+      return (
+        <Box sx={{ width: '80%', margin: 'auto' }}>
+          <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
+            <Tabs value={value} onChange={handleChange} aria-label="basic tabs example">
+              <Tab label="视频" />
+              <Tab label="指令" />
+              <Tab label="日志" />
+            </Tabs>
+          </Box>
+          <TabPanel value={value} index={0}>
+            <VideoStream />
+            <SystemInfomation />
+          </TabPanel>
+          <TabPanel value={value} index={1}>
+            <CommandForm />
+          </TabPanel>
+          <TabPanel value={value} index={2}>
+            <Logs />
+          </TabPanel>
+        </Box>
+      );
+    }
+
+    ReactDOM.render(
+      <React.StrictMode>
+        <App />
+      </React.StrictMode>,
+      document.getElementById('root')
+    );
+  </script>
+</body>
+
+</html>
