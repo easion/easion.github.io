@@ -11,6 +11,7 @@
   <!-- MUI Core -->
   <script src="js/material-ui.development.js"></script>
   <script src="js/adapter-latest.js"></script>
+  <script src="js/mqtt.min.js"></script>
 
   <!-- Roboto Font -->
   <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap" />
@@ -75,18 +76,31 @@
     function VideoStream() {
       const videoRef = React.useRef(null);
       const [status, setStatus] = React.useState('Initializing...');
-      const [CAMERA_ID, setCAMERA_ID] = React.useState('camera_id_6732');
+      const [CAMERA_ID, setCAMERA_ID] = React.useState('c82ed51d-844e-4ee6-8d83-a729b1e94bd7');
       const [isConnected, setIsConnected] = React.useState(false);
       const wsRef = React.useRef(null);
       const pcRef = React.useRef(null);
       const dcRef = React.useRef(null);
 
-      const signaling_send = (msg) => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          var text = JSON.stringify(msg);
-          console.log("signaling_send: --> " + text);
-          wsRef.current.send(text);
-        }
+      const signaling_send = (type, msg) => {
+
+        var text = JSON.stringify(msg);
+
+        console.log("signaling_send: " + text);
+
+        wsRef.current.publish('' + CAMERA_ID + '/' + type + '/' + clientId + '/offer', text, { qos: 0, retain: false }, function (error) {
+          if (error) {
+            console.log(error)
+          } else {
+            console.log('Published')
+          }
+        });
+
+        //if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        //  var text = JSON.stringify(msg);
+        //  console.log("signaling_send: --> " + text);
+        //  wsRef.current.send(text);
+        //}
       };
 
 
@@ -94,21 +108,50 @@
 
         //setClientId(randomId(10));
 
-        var _default_websocket_url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + location.host + '/rws/ws';
-        wsRef.current = new WebSocket(_default_websocket_url);
+        const options = {
+          // Clean session
+          protocolVersion: 5,
+          clean: true,
+          connectTimeout: 4000,
+          // Authentication
+          clientId: clientId,
+          username: 'user',
+          password: '12345678',
+        };
 
-        wsRef.current.onopen = () => {
-          var cmdbody = {};
+        var _default_websocket_url = "wss://k781eddd.ala.cn-hangzhou.emqxsl.cn:8084/mqtt";
+
+        wsRef.current = mqtt.connect(_default_websocket_url, options);
+
+        wsRef.current.on('connect', function () {
+          /*var cmdbody = {};
           cmdbody.cmd = "webrtc_auth"; //登录
           cmdbody.id = clientId;
           //console.log("--> " + JSON.stringify(cmdbody));
           signaling_send(cmdbody);
+      */
 
-          setStatus('WebSocket connected. Click Start to begin streaming.');
-        };
+          wsRef.current.subscribe('' + CAMERA_ID + '/ice/' + clientId + '', { qos: 0 }, function (error, granted) {
+            if (error) {
+              console.log("subscribe ice error: ", error);
+            }
+          });
 
-        wsRef.current.onmessage = async (event) => {
-          const message = JSON.parse(event.data);
+          wsRef.current.subscribe('' + CAMERA_ID + '/sdp/' + clientId + '', { qos: 0 }, function (error, granted) {
+            if (error) {
+              console.log("subscribe sdp error: ", error);
+            }
+          });
+
+
+          setStatus('mqtt connected. Click Start to begin streaming.');
+        });
+
+        wsRef.current.on('message', function (topic, payload, packet) {
+
+          console.log(`Topic: ${topic}, Message: ${payload.toString()}, QoS: ${packet.qos}`);
+
+          /*const message = JSON.parse(payload);
           if (message.cmd == 'webrtc_set_sdp') {
             console.log("--set sdp --" + event.data);
           }
@@ -125,17 +168,6 @@
             }
             else if (message.event == 'webrtc_candidate') {
               console.log("--receive candidate--------------", message);
-
-              /*var candidate = new RTCIceCandidate(message);
-              pcRef.current.addIceCandidate(candidate)
-                .then(() => {
-                  console.log('成功添加 ICE candidate');
-                })
-                .catch((error) => {
-                  console.error('添加 ICE candidate 失败: ' + error);
-                });
-        */
-
             }
             else {
               console.log("--receive event--------------", message);
@@ -144,24 +176,30 @@
           else {
             //console.log("--> unknow ws recv:", e.data);
           }
+      */
 
-        };
+        });
 
-        wsRef.current.onerror = (error) => {
-          console.error('WebSocket Error:', error);
-          setStatus('Error: WebSocket connection failed');
-        };
+        wsRef.current.on('error', function (error) {
+          console.error('mqtt Error:', error);
+          setStatus('Error: mqtt connection failed');
+        });
 
-        wsRef.current.onclose = () => {
-          setStatus('WebSocket disconnected');
+        wsRef.current.on('close', function () {
+          setStatus('mqtt close');
+          //setIsConnected(false);
+        });
+
+        wsRef.current.on('disconnect', function (packet) {
+          setStatus('mqtt disconnected');
           setIsConnected(false);
-        };
+        });
       };
 
-      const handleNewConnect = async (offer) => {
+      const handleNewConnect = async () => {
         pcRef.current = new RTCPeerConnection({
           // Recommended for libdatachannel
-          bundlePolicy: 'max-bundle',
+          //bundlePolicy: 'max-bundle',
           //offerToReceiveAudio: 0,
           //offerToReceiveVideo: 1,
           iceServers: [
@@ -235,7 +273,7 @@
           else {
             cand.candidate = null;
           }
-          signaling_send(cand);
+          signaling_send('ice', cand);
         };
 
         pcRef.current.onicecandidateerror = function (e) {
@@ -255,24 +293,33 @@
           console.log("local onnegotiationneeded: " + JSON.stringify(evt));
         };
 
+        pcRef.current.oniceconnectionstatechange = () => {
+          console.log("ICE connection state changed:", pcRef.current.iceConnectionState);
+          if (pcRef.current.iceConnectionState === 'failed' || pcRef.current.iceConnectionState === 'disconnected') {
+            console.log("ICE connection failed or disconnected. Restarting ICE.");
+            pcRef.current.restartIce();
+          }
+        };
+
         pcRef.current.onicegatheringstatechange = (state) => {
           console.log("--> local iceGatheringState: " + pcRef.current.iceGatheringState);
           if (pcRef.current.iceGatheringState === 'complete') {
             // We only want to provide an answer once all of our candidates have been added to the SDP.
             const answer = pcRef.current.localDescription;
 
-            console.log("localDescription type: " + answer.type);
+            console.log("iceGatheringState complete Description type: " + answer.type);
             //document.querySelector('textarea').value = answer.sdp;
             //sdpLocal.innerHTML = answer.sdp;
 
-            var cmdbody = {
+            /*var cmdbody = {
               "cmd": "webrtc_set_sdp",
             };
             cmdbody.type = answer.type;
             cmdbody.sdp = answer.sdp;
             cmdbody.id = clientId;
             cmdbody.to = CAMERA_ID;
-            signaling_send(cmdbody);
+            signaling_send('sdp', cmdbody);
+      */
           }
           else {
           }
@@ -315,6 +362,32 @@
           };
 
         };
+
+        /*pcRef.current.createOffer().then((offer) => {
+          return pcRef.current.setLocalDescription(offer);
+        }).then(() => {
+
+          var answer = pcRef.current.localDescription;
+
+          var cmdbody = {
+            "cmd": "webrtc_set_sdp",
+          };
+          cmdbody.type = answer.type;
+          cmdbody.sdp = answer.sdp;
+          cmdbody.id = clientId;
+          cmdbody.to = CAMERA_ID;
+          signaling_send('sdp', cmdbody);
+
+        }).catch((error) => {
+          console.error("Error creating offer: ", error);
+        });
+    */
+
+        const offer = await pcRef.current.createOffer();
+        console.log("---------");
+        await pcRef.current.setLocalDescription(offer);
+        console.log("Local description set, ICE gathering should start");
+
 
         var sendChannel = pcRef.current.createDataChannel("browserChannel");
         //sendChannel = pcRef.current.createDataChannel("sendDataChannel", {reliable: false});
@@ -364,7 +437,7 @@
       };
 
       const startStreaming = () => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        /*if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
 
           var cmdbody = {};
           cmdbody.cmd = "webrtc_request_offer";
@@ -373,8 +446,10 @@
           signaling_send(cmdbody);
           setStatus('Requesting video stream...');
         } else {
-          setStatus('Error: WebSocket not connected');
+          setStatus('Error: mqtt not connected');
         }
+    */
+        handleNewConnect();
       };
 
       React.useEffect(() => {
@@ -447,7 +522,7 @@
       const [codec, setCodec] = React.useState('h264');
 
       const postJsonCmd = (cmdline, func) => {
-        fetch('/api', {
+        /*fetch('/api', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -457,6 +532,7 @@
           .then(response => response.json())
           .then(func)
           .catch(error => console.error('错误:', error));
+      */
       };
 
       const updateValue = (data) => {
@@ -534,7 +610,8 @@
       };
 
       const postJsonCmd = (cmdline, func) => {
-        fetch('/api', {
+        /*
+    fetch('/api', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -544,6 +621,7 @@
           .then(response => response.json())
           .then(func)
           .catch(error => console.error('错误:', error));
+      */
       };
 
       const handleJsonCommand = () => {
@@ -621,7 +699,7 @@
 
       const fetchLogs = async () => {
         try {
-          const response = await fetch('/log.txt');
+          /*const response = await fetch('/log.txt');
           if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
           }
@@ -633,6 +711,7 @@
               return { timestamp, type, message: messageParts.join(' ') };
             });
           setLogs(newLogs);
+      */
           setLoading(false);
         } catch (e) {
           setError('Failed to fetch logs: ' + e.message);
