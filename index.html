@@ -219,6 +219,9 @@
           ]
         });
 
+        pcRef.current.addTransceiver('video', { direction: 'recvonly' });
+        pcRef.current.addTransceiver('audio', { direction: 'recvonly' });
+
         // 当新的候选对发生变化时，触发selectedcandidatepairchange事件
         pcRef.current.onselectedcandidatepairchange = function (event) {
           // 获取当前的候选对
