@@ -78,9 +78,15 @@
       const [status, setStatus] = React.useState('Initializing...');
       const [CAMERA_ID, setCAMERA_ID] = React.useState('c82ed51d-844e-4ee6-8d83-a729b1e94bd7');
       const [isConnected, setIsConnected] = React.useState(false);
+      const [hasRemoteSdp, setRemoteSdp] = React.useState(false);
       const wsRef = React.useRef(null);
       const pcRef = React.useRef(null);
       const dcRef = React.useRef(null);
+      const [icesList, setIcesList] = React.useState([]);
+
+      React.useEffect(() => {
+        console.log('Updated icesList:', icesList);
+      }, [icesList]);
 
       const signaling_send = (type, msg) => {
 
@@ -96,16 +102,10 @@
           }
         });
 
-        //if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        //  var text = JSON.stringify(msg);
-        //  console.log("signaling_send: --> " + text);
-        //  wsRef.current.send(text);
-        //}
       };
 
 
       const initWebSocket = () => {
-
         //setClientId(randomId(10));
 
         const options = {
@@ -120,64 +120,73 @@
         };
 
         var _default_websocket_url = "wss://k781eddd.ala.cn-hangzhou.emqxsl.cn:8084/mqtt";
-
         wsRef.current = mqtt.connect(_default_websocket_url, options);
 
         wsRef.current.on('connect', function () {
-          /*var cmdbody = {};
-          cmdbody.cmd = "webrtc_auth"; //登录
-          cmdbody.id = clientId;
-          //console.log("--> " + JSON.stringify(cmdbody));
-          signaling_send(cmdbody);
-      */
-
           wsRef.current.subscribe('' + CAMERA_ID + '/ice/' + clientId + '', { qos: 0 }, function (error, granted) {
             if (error) {
               console.log("subscribe ice error: ", error);
             }
           });
-
           wsRef.current.subscribe('' + CAMERA_ID + '/sdp/' + clientId + '', { qos: 0 }, function (error, granted) {
             if (error) {
               console.log("subscribe sdp error: ", error);
             }
           });
-
-
           setStatus('mqtt connected. Click Start to begin streaming.');
         });
 
         wsRef.current.on('message', function (topic, payload, packet) {
 
-          console.log(`Topic: ${topic}, Message: ${payload.toString()}, QoS: ${packet.qos}`);
-
-          /*const message = JSON.parse(payload);
-          if (message.cmd == 'webrtc_set_sdp') {
-            console.log("--set sdp --" + event.data);
-          }
-          else if (message.cmd == 'webrtc_request_offer') {
-            console.log("--receive offer--------------", message);
-            handleNewConnect(message);
-            setStatus("正在建立连接,请等待...");
-          }
-          else if (message.cmd == 'event-notify') {
-            if (message.event == 'webrtc_sdp') {
-              setStatus("收到SDP，急速连接中...");
+          try {
+            const message = JSON.parse(payload);
+            if (topic.includes("/sdp/") == true) {
+              console.log(`sdp Topic: ${topic}, Message: ${payload.toString()}, QoS: ${packet.qos}`);
+              if (hasRemoteSdp == true) {
+                console.error("hasRemoteSdp is true");
+                return;
+              }
               handleOffer(message);
-              console.log("--receive sdp--------------", message);
+              setRemoteSdp(true);
+              if (icesList.length > 0) {
+                console.log("icesList add!");
+                for (candidateInfo in icesList) {
+                  pcRef.current.addIceCandidate(new RTCIceCandidate(candidateInfo)).catch((error) => {
+                    console.error('Add ice candidate error:', error);
+                  });
+                }
+              }
+              else {
+                console.error("icesList is empty!", icesList);
+              }
             }
-            else if (message.event == 'webrtc_candidate') {
-              console.log("--receive candidate--------------", message);
+            else if (topic.includes("/ice/") == true) {
+              const candidateInfo = {
+                candidate: message.candidate,
+                sdpMid: message.sdpMid,
+                sdpMLineIndex: message.sdpMLineIndex,
+              };
+              if (hasRemoteSdp == false) {
+                //icesList.add(candidateInfo);
+                setIcesList(current => [...current, candidateInfo]);
+                console.log(`save ice Topic: ${topic}, Message: ${payload.toString()}, QoS: ${packet.qos}`);
+              }
+              else {
+                // 添加远端的ICE候选
+                pcRef.current.addIceCandidate(new RTCIceCandidate(candidateInfo)).catch((error) => {
+                  console.error('Add ice candidate error:', error);
+                });
+                console.log(`connect ice Topic: ${topic}, Message: ${payload.toString()}, QoS: ${packet.qos}`);
+              }
+
             }
             else {
-              console.log("--receive event--------------", message);
+              console.error(`Error Topic: ${topic}, Message: ${payload.toString()}, QoS: ${packet.qos}`);
             }
           }
-          else {
-            //console.log("--> unknow ws recv:", e.data);
+          catch (e) {
+            console.error("Error parse json", e);
           }
-      */
-
         });
 
         wsRef.current.on('error', function (error) {
@@ -299,6 +308,15 @@
             console.log("ICE connection failed or disconnected. Restarting ICE.");
             pcRef.current.restartIce();
           }
+          // 获取和打印当前的 ICE 角色
+          pcRef.current.getStats(null).then(stats => {
+            stats.forEach(report => {
+              if (report.type === "local-candidate") {
+                console.log("Local ICE role: " + report.iceRole);
+              }
+            });
+          });
+
         };
 
         pcRef.current.onicegatheringstatechange = (state) => {
@@ -328,6 +346,8 @@
         pcRef.current.ontrack = (event) => {
           const track = event.track;
 
+          console.log("ontrack --> " + track.kind);
+
           if (track.kind === 'video') {
           }
           else if (track.kind === 'audio') {
@@ -336,7 +356,18 @@
           if (videoRef.current) {
             videoRef.current.srcObject = event.streams[0];
 
-            videoRef.current.play();
+            videoRef.current.onloadeddata = () => {
+              console.log("onloadeddata --> ");
+            };
+
+            setTimeout(() => {
+              console.log("Play video.");
+              videoRef.current.play().catch(error => {
+                console.error('Error playing the video:', error);
+              });
+            }, 1000);
+
+            //videoRef.current.play();
             setStatus("正在显示视频...");
 
             videoRef.current.addEventListener('loadedmetadata', function () {
@@ -363,31 +394,6 @@
 
         };
 
-        /*pcRef.current.createOffer().then((offer) => {
-          return pcRef.current.setLocalDescription(offer);
-        }).then(() => {
-
-          var answer = pcRef.current.localDescription;
-
-          var cmdbody = {
-            "cmd": "webrtc_set_sdp",
-          };
-          cmdbody.type = answer.type;
-          cmdbody.sdp = answer.sdp;
-          cmdbody.id = clientId;
-          cmdbody.to = CAMERA_ID;
-          signaling_send('sdp', cmdbody);
-
-        }).catch((error) => {
-          console.error("Error creating offer: ", error);
-        });
-    */
-
-        const offer = await pcRef.current.createOffer();
-        console.log("---------");
-        await pcRef.current.setLocalDescription(offer);
-        console.log("Local description set, ICE gathering should start");
-
 
         var sendChannel = pcRef.current.createDataChannel("browserChannel");
         //sendChannel = pcRef.current.createDataChannel("sendDataChannel", {reliable: false});
@@ -404,14 +410,50 @@
         }
 
         dcRef.current = sendChannel;
+
+        console.log("=============");
+
+        const offer = await pcRef.current.createOffer({
+          //offerToReceiveAudio: true,
+          offerToReceiveVideo: true
+        });
+        let sdp = offer.sdp;
+
+        sdp = sdp.replace(/packetization-mode=1/g, 'packetization-mode=0');
+        sdp = sdp.replace(
+          /a=fmtp:(\d+) ((?!packetization-mode).)*(?=\r\n)/g,
+          '$&;packetization-mode=0'
+        );
+
+        const modifiedOffer = new RTCSessionDescription({
+          type: offer.type,
+          sdp: sdp
+        });
+
+        await pcRef.current.setLocalDescription(modifiedOffer);
+        console.log("Local description set, ICE gathering should start");
+
+        var answer = pcRef.current.localDescription;
+        console.log("---------");
+        console.log(answer);
+
+        var cmdbody = {
+          "cmd": "webrtc_set_sdp",
+        };
+        cmdbody.type = answer.type;
+        cmdbody.sdp = answer.sdp;
+        cmdbody.id = clientId;
+        cmdbody.to = CAMERA_ID;
+        signaling_send('sdp', cmdbody);
+
       }
 
       const handleOffer = async (offer) => {
         //await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
         await pcRef.current.setRemoteDescription(offer);
-        const answer = await pcRef.current.createAnswer();
-        console.log("browser answer: " + JSON.stringify(answer));
-        await pcRef.current.setLocalDescription(answer);
+        //const answer = await pcRef.current.createAnswer();
+        //console.log("browser answer: " + JSON.stringify(answer));
+        //await pcRef.current.setLocalDescription(answer);
 
         //wsRef.current.send(JSON.stringify({ type: 'answer', answer: pcRef.current.localDescription }));
 
@@ -437,18 +479,6 @@
       };
 
       const startStreaming = () => {
-        /*if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-
-          var cmdbody = {};
-          cmdbody.cmd = "webrtc_request_offer";
-          cmdbody.id = clientId;
-          cmdbody.to = CAMERA_ID;
-          signaling_send(cmdbody);
-          setStatus('Requesting video stream...');
-        } else {
-          setStatus('Error: mqtt not connected');
-        }
-    */
         handleNewConnect();
       };
 
