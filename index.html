@@ -84,9 +84,9 @@
       const dcRef = React.useRef(null);
       const [icesList, setIcesList] = React.useState([]);
 
-      React.useEffect(() => {
-        console.log('Updated icesList:', icesList);
-      }, [icesList]);
+      //React.useEffect(() => {
+      //  console.log('Updated icesList:', icesList);
+      //}, [icesList]);
 
       const signaling_send = (type, msg) => {
 
@@ -103,6 +103,55 @@
         });
 
       };
+
+      function removeCodec(orgsdp, codec) {
+        const internalFunc = (sdp) => {
+          const codecre = new RegExp('(a=rtpmap:(\\d*) ' + codec + '\/90000\\r\\n)');
+          const rtpmaps = sdp.match(codecre);
+          if (rtpmaps == null || rtpmaps.length <= 2) {
+            return sdp;
+          }
+          const rtpmap = rtpmaps[2];
+          let modsdp = sdp.replace(codecre, "");
+
+          const rtcpre = new RegExp('(a=rtcp-fb:' + rtpmap + '.*\r\n)', 'g');
+          modsdp = modsdp.replace(rtcpre, "");
+
+          const fmtpre = new RegExp('(a=fmtp:' + rtpmap + '.*\r\n)', 'g');
+          modsdp = modsdp.replace(fmtpre, "");
+
+          const aptpre = new RegExp('(a=fmtp:(\\d*) apt=' + rtpmap + '\\r\\n)');
+          const aptmaps = modsdp.match(aptpre);
+          let fmtpmap = "";
+          if (aptmaps != null && aptmaps.length >= 3) {
+            fmtpmap = aptmaps[2];
+            modsdp = modsdp.replace(aptpre, "");
+
+            const rtppre = new RegExp('(a=rtpmap:' + fmtpmap + '.*\r\n)', 'g');
+            modsdp = modsdp.replace(rtppre, "");
+          }
+
+          let videore = /(m=video.*\r\n)/;
+          const videolines = modsdp.match(videore);
+          if (videolines != null) {
+            //If many m=video are found in SDP, this program doesn't work.
+            let videoline = videolines[0].substring(0, videolines[0].length - 2);
+            const videoelems = videoline.split(" ");
+            let modvideoline = videoelems[0];
+            videoelems.forEach((videoelem, index) => {
+              if (index === 0) return;
+              if (videoelem == rtpmap || videoelem == fmtpmap) {
+                return;
+              }
+              modvideoline += " " + videoelem;
+            })
+            modvideoline += "\r\n";
+            modsdp = modsdp.replace(videore, modvideoline);
+          }
+          return internalFunc(modsdp);
+        }
+        return internalFunc(orgsdp);
+      }
 
 
       const initWebSocket = () => {
@@ -212,10 +261,15 @@
           //offerToReceiveAudio: 0,
           //offerToReceiveVideo: 1,
           iceServers: [
-            { 'urls': 'stun:stun.l.google.com:19302' },
-            { 'urls': 'stun:stun1.l.google.com:19302' },
-            { 'urls': 'stun:stun2.l.google.com:19302' },
-            { 'urls': 'stun:stun3.l.google.com:19302' }
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            {
+              urls: "turn:194.102.36.182:3478",
+              username: "webrtc",
+              credential: "webrtc",
+            },
           ]
         });
 
@@ -284,6 +338,7 @@
           }
           else {
             cand.candidate = null;
+            return;
           }
           signaling_send('ice', cand);
         };
@@ -315,7 +370,7 @@
           pcRef.current.getStats(null).then(stats => {
             stats.forEach(report => {
               if (report.type === "local-candidate") {
-                console.log("Local ICE role: " + report.iceRole);
+                console.log("Local ICE role: ", report);
               }
             });
           });
@@ -349,11 +404,15 @@
         pcRef.current.ontrack = (event) => {
           const track = event.track;
 
-          console.log("ontrack --> " + track.kind);
-
           if (track.kind === 'video') {
+            console.log("ontrack kind1 --> " + track.kind);
           }
           else if (track.kind === 'audio') {
+            console.log("ontrack kind2 --> " + track.kind);
+            return;
+          }
+          else {
+            console.log("ontrack unknow kind --> " + track.kind);
           }
 
           if (videoRef.current) {
@@ -362,21 +421,14 @@
             videoRef.current.onloadeddata = () => {
               console.log("onloadeddata --> ");
             };
-
-            setTimeout(() => {
-              console.log("Play video.");
-              videoRef.current.play().catch(error => {
-                console.error('Error playing the video:', error);
-              });
-            }, 1000);
-
-            //videoRef.current.play();
+            console.log("Play video ...");
+            videoRef.current.play().catch(error => {
+              console.error('Error playing the video:', error);
+            });
             setStatus("正在显示视频...");
-
             videoRef.current.addEventListener('loadedmetadata', function () {
               console.log(`Remote video videoWidth: ${this.videoWidth}px,  videoHeight: ${this.videoHeight}px`);
             });
-
             videoRef.current.addEventListener('resize', () => {
               console.log(`Remote video size changed to ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`);
             });
@@ -384,17 +436,6 @@
           else {
             console.log("No video elements");
           }
-
-          event.streams[0].onremovetrack = function (evt_r) {
-            const track = evt_r.track;
-            console.log("local onremovetrack: kind " + track.kind);
-
-            if (track.kind === 'video') {
-            }
-            else if (track.kind === 'audio') {
-            }
-          };
-
         };
 
 
@@ -413,24 +454,27 @@
         }
 
         dcRef.current = sendChannel;
-
         console.log("=============");
 
         const offer = await pcRef.current.createOffer({
           //offerToReceiveAudio: true,
           offerToReceiveVideo: true
         });
-        let sdp = offer.sdp;
+        let sdp_new = offer.sdp;
 
-        sdp = sdp.replace(/packetization-mode=1/g, 'packetization-mode=0');
-        sdp = sdp.replace(
-          /a=fmtp:(\d+) ((?!packetization-mode).)*(?=\r\n)/g,
-          '$&;packetization-mode=0'
-        );
+        sdp_new = removeCodec(sdp_new, 'VP8');
+        sdp_new = removeCodec(sdp_new, 'VP9');
+        sdp_new = removeCodec(sdp_new, 'AV1');
+
+        //sdp_new = sdp_new.replace(/packetization-mode=1/g, 'packetization-mode=0');
+        //sdp_new = sdp_new.replace(
+        //  /a=fmtp:(\d+) ((?!packetization-mode).)*(?=\r\n)/g,
+        //  '$&;packetization-mode=0'
+        //);
 
         const modifiedOffer = new RTCSessionDescription({
           type: offer.type,
-          sdp: sdp
+          sdp: sdp_new
         });
 
         await pcRef.current.setLocalDescription(modifiedOffer);
@@ -457,9 +501,7 @@
         //const answer = await pcRef.current.createAnswer();
         //console.log("browser answer: " + JSON.stringify(answer));
         //await pcRef.current.setLocalDescription(answer);
-
         //wsRef.current.send(JSON.stringify({ type: 'answer', answer: pcRef.current.localDescription }));
-
         setStatus('WebRTC connected. Streaming video...');
         setIsConnected(true);
       };
@@ -476,7 +518,6 @@
           } else if (videoElement.msRequestFullscreen) { // IE/Edge
             videoElement.msRequestFullscreen();
           }
-
           console.log("Enter full screen");
         }
       };
